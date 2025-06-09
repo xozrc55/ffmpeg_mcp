@@ -47,12 +47,58 @@
 
 ### 启动服务
 
-在项目根目录下运行 (即包含 `pyproject.toml` 和 `ffmpeg_mcp` 子目录的目录)：
+本服务提供两种启动模式：
+
+#### 本地模式 (stdio)
+
 ```bash
-python ffmpeg_mcp/main.py
+python ffmpeg_mcp/main.py local
 ```
 
-服务将在 http://127.0.0.1:9000/sse 上启动。
+这种模式通过标准输入/输出进行通信，适合本地 MCP 客户端使用。
+
+#### 主机模式 (网络)
+
+```bash
+python ffmpeg_mcp/main.py host [--host-address HOST_ADDRESS] [--port PORT]
+```
+
+默认情况下，服务将在 `0.0.0.0:9000` 上启动，使用 SSE 传输协议。
+
+### MCP 客户端配置
+
+要使用此服务，你需要在 MCP 客户端中添加相应的配置。以下是配置示例：
+
+```json
+{
+  "mcpServers": {
+    "ffmpeg-mcp": {
+      "disabled": false,
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "E:\\pyproj\\FirstMcp\\ffmpeg_mcp\\ffmpeg_mcp\\main.py",
+        "local"
+      ]
+    }
+  }
+}
+```
+
+这个配置告诉 MCP 客户端通过执行 `uv run python E:\pyproj\FirstMcp\ffmpeg_mcp\ffmpeg_mcp\main.py local` 命令来启动服务，并通过标准输入/输出与服务通信。使用 `uv run` 可以确保服务在正确的 Python 环境中运行。
+
+如果你希望连接到已经运行的网络模式服务，可以使用以下配置：
+
+```json
+{
+  "mcpServers": {
+    "ffmpeg-mcp": {
+      "serverUrl": "http://127.0.0.1:9000/sse"
+    }
+  }
+}
+```
 
 ### API 接口说明
 
@@ -127,17 +173,20 @@ print(response)
 ## 项目结构
 
 ```
-fastmcp_project/
-├── fastmcp/           # 主源代码目录
-│   ├── __init__.py    # 包初始化文件
-│   ├── main.py        # 主入口文件，服务启动逻辑
-│   ├── tools.py       # FFmpeg工具函数
-│   └── utils/         # 工具函数目录
-│       ├── __init__.py
-│       └── ffmpeg_helpers.py # FFmpeg辅助函数
-├── requirements.txt   # 项目依赖
+ffmpeg_mcp/
+├── .git/              # Git仓库数据
+├── .gitignore         # Git忽略文件
+├── .venv/             # Python虚拟环境
+├── LICENSE            # 许可证文件
 ├── README.md          # 项目文档
-└── Resources/         # 资源文件夹，存放示例视频和输出文件
+├── build/             # 构建目录
+├── dist/              # 分发目录
+├── ffmpeg_mcp/        # 主源代码目录
+│   ├── __init__.py    # 包初始化文件
+│   └── main.py        # 主入口文件，包含所有FFmpeg工具函数和服务启动逻辑
+├── ffmpeg_mcp.egg-info/ # 包安装信息
+├── pyproject.toml     # 项目配置和依赖
+└── uv.lock            # uv依赖锁文件
 ```
 
 ## 注意事项
@@ -148,12 +197,21 @@ fastmcp_project/
 
 ## 未来计划
 
+### 视频处理功能
+
 - 添加视频剪切功能
 - 添加视频压缩功能
 - 添加视频裁剪功能
 - 添加视频旋转和翻转功能
 - 添加添加水印功能
 - 添加视频速度调整功能
+
+### 服务功能增强
+
+- 增强 host 模式功能，提供 Web 界面
+- 实现视频上传和下载功能，支持远程文件管理
+- 添加任务队列和处理进度监控
+- 支持批量处理任务
 
 ## 许可证
 

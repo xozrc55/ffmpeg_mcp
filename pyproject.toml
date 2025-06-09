@@ -1,7 +1,7 @@
 [project]
 name = "ffmpeg_mcp"
 version = "0.1.0"
-description = "一个基于FastMCP的MCP服务器项目"
+description = "一个基于FastMCP的MCP服务器项目关于FFmpeg"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,3 +12,6 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["ffmpeg_mcp"]
+
+[project.scripts]
+ffmpeg-mcp = "ffmpeg_mcp.main:app"
