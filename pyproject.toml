@@ -1,0 +1,14 @@
+[project]
+name = "ffmpeg_mcp"
+version = "0.1.0"
+description = "一个基于FastMCP的MCP服务器项目"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "uvicorn>=0.27.0",
+    "typer>=0.16.0",
+]
+
+[tool.setuptools]
+packages = ["ffmpeg_mcp"]
