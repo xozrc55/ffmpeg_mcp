@@ -3,7 +3,7 @@ name = "ffmpeg_mcp"
 version = "0.1.0"
 description = "一个基于FastMCP的MCP服务器项目关于FFmpeg"
 readme = "README.md"
-requires-python = ">=3.09"
+requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=2.0.0",
     "uvicorn>=0.27.0",
