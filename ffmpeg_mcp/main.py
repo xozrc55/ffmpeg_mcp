@@ -11,21 +11,78 @@ import subprocess
 import os
 import json
 import tempfile
-from typing import Dict, Any, List, Optional, Annotated
+import re
+import uuid
+import requests
+from typing import Dict, Any, List, Optional, Annotated, Tuple
 import typer
 
 
-# FFmpeg 辅助函数
+# FFmpeg 辅助函数和网络处理函数
+# 获取程序指定的临时文件目录
+# 这个目录将用于存放所有下载的视频和其他临时文件
+def get_temp_directory() -> str:
+    """获取程序指定的临时文件目录
+    
+    Returns:
+        临时文件目录路径
+    """
+    temp_dir = os.path.join(tempfile.gettempdir(), "ffmpeg_mcp_temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    return temp_dir
+
 def ensure_directory_exists(path: str) -> None:
     """确保目录存在，如果不存在则创建
     
     Args:
         path: 文件路径或目录路径
     """
-    directory = path if os.path.isdir(path) else os.path.dirname(path)
+    directory = os.path.dirname(path) if os.path.isfile(path) else path
     if directory and not os.path.exists(directory):
-        os.makedirs(directory)
+        os.makedirs(directory, exist_ok=True)
 
+
+def is_url(path: str) -> bool:
+    """判断路径是否为URL
+    
+    Args:
+        path: 路径字符串
+        
+    Returns:
+        是否为URL
+    """
+    # 简单的URL判断，检查是否以http://或https://开头
+    return bool(re.match(r'^https?://', path))
+
+def download_video(url: str) -> str:
+    """下载网络视频到程序指定的临时目录
+    
+    Args:
+        url: 视频URL
+        
+    Returns:
+        本地文件路径
+    """
+    try:
+        # 获取程序指定的临时目录
+        temp_dir = get_temp_directory()
+        
+        # 生成唯一的临时文件名
+        temp_filename = f"video_{uuid.uuid4().hex}.mp4"
+        temp_filepath = os.path.join(temp_dir, temp_filename)
+        
+        # 下载视频文件
+        response = requests.get(url, stream=True)
+        response.raise_for_status()  # 如果请求失败则抛出异常
+        
+        # 写入临时文件
+        with open(temp_filepath, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        return temp_filepath
+    except Exception as e:
+        raise Exception(f"下载视频失败: {str(e)}")
 
 def check_file_exists(file_path: str) -> bool:
     """检查文件是否存在
@@ -36,6 +93,9 @@ def check_file_exists(file_path: str) -> bool:
     Returns:
         文件是否存在
     """
+    # 如果是URL，返回假
+    if is_url(file_path):
+        return False
     return os.path.isfile(file_path)
 
 
@@ -185,7 +245,7 @@ def ffmpeg_extract_audio(video_path: str, audio_path: str, audio_format: str = "
     """从视频中提取音频
     
     Args:
-        video_path: 视频文件路径
+        video_path: 视频文件路径或URL
         audio_path: 输出音频文件路径
         audio_format: 音频格式，默认为 mp3
     
@@ -193,7 +253,16 @@ def ffmpeg_extract_audio(video_path: str, audio_path: str, audio_format: str = "
         包含提取结果的字典
     """
     try:
-        if not check_file_exists(video_path):
+        local_video_path = video_path
+        
+        # 判断是否为网络地址，如果是则下载到本地
+        if is_url(video_path):
+            try:
+                local_video_path = download_video(video_path)
+                print(f"已下载网络视频到临时文件: {local_video_path}")
+            except Exception as e:
+                return {"error": f"下载视频失败: {str(e)}"}
+        elif not check_file_exists(video_path):
             return {"error": f"视频文件不存在: {video_path}"}
         
         # 确保输出目录存在
@@ -201,7 +270,7 @@ def ffmpeg_extract_audio(video_path: str, audio_path: str, audio_format: str = "
         
         # 构建 FFmpeg 命令
         cmd = [
-            "ffmpeg", "-i", video_path, "-vn", "-acodec", "copy" if audio_format == "aac" else "libmp3lame",
+            "ffmpeg", "-i", local_video_path, "-vn", "-acodec", "copy" if audio_format == "aac" else "libmp3lame",
             "-y", audio_path
         ]
         
@@ -212,7 +281,8 @@ def ffmpeg_extract_audio(video_path: str, audio_path: str, audio_format: str = "
             return {
                 "success": True,
                 "message": f"音频提取成功: {audio_path}",
-                "output_path": audio_path
+                "output_path": audio_path,
+                "source": "网络视频" if is_url(video_path) else "本地视频"
             }
         else:
             return {

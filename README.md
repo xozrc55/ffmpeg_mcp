@@ -40,7 +40,7 @@
 
 3. 安装依赖 (使用 `uv`)
    ```bash
-   uv pip sync
+   uv sync
    ```
 
 ## 使用方法
