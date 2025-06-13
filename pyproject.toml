@@ -11,6 +11,8 @@ dependencies = [
     "requests>=2.31.0",
 ]
 
+
+
 [tool.setuptools]
 packages = ["ffmpeg_mcp"]
 

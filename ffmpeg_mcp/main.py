@@ -6,6 +6,7 @@ FFmpeg MCP 服务 - 主入口文件
 这个文件是FFmpeg MCP服务的主入口点，负责启动MCP服务器并提供FFmpeg相关工具函数。
 """
 
+from click import utils
 from fastmcp import FastMCP
 import subprocess
 import os
@@ -14,170 +15,71 @@ import tempfile
 import re
 import uuid
 import requests
-from typing import Dict, Any, List, Optional, Annotated, Tuple
+import functools
+import base64
+from typing import Dict, Any, List, Optional, Annotated, Tuple, Callable
 import typer
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
+from .utils.utils import (
+    get_temp_directory,
+    get_resources_directory,
+    copy_to_resources,
+    ensure_directory_exists,
+    is_url,
+    download_video,
+    check_file_exists,
+    run_ffmpeg_command,
+    get_video_duration,
+    format_time,
+)
 
-# FFmpeg 辅助函数和网络处理函数
-# 获取程序指定的临时文件目录
-# 这个目录将用于存放所有下载的视频和其他临时文件
-def get_temp_directory() -> str:
-    """获取程序指定的临时文件目录
-    
-    Returns:
-        临时文件目录路径
-    """
-    temp_dir = os.path.join(tempfile.gettempdir(), "ffmpeg_mcp_temp")
-    os.makedirs(temp_dir, exist_ok=True)
-    return temp_dir
-
-def ensure_directory_exists(path: str) -> None:
-    """确保目录存在，如果不存在则创建
-    
-    Args:
-        path: 文件路径或目录路径
-    """
-    directory = os.path.dirname(path) if os.path.isfile(path) else path
-    if directory and not os.path.exists(directory):
-        os.makedirs(directory, exist_ok=True)
-
-
-def is_url(path: str) -> bool:
-    """判断路径是否为URL
-    
-    Args:
-        path: 路径字符串
-        
-    Returns:
-        是否为URL
-    """
-    # 简单的URL判断，检查是否以http://或https://开头
-    return bool(re.match(r'^https?://', path))
-
-def download_video(url: str) -> str:
-    """下载网络视频到程序指定的临时目录
-    
-    Args:
-        url: 视频URL
-        
-    Returns:
-        本地文件路径
-    """
-    try:
-        # 获取程序指定的临时目录
-        temp_dir = get_temp_directory()
-        
-        # 生成唯一的临时文件名
-        temp_filename = f"video_{uuid.uuid4().hex}.mp4"
-        temp_filepath = os.path.join(temp_dir, temp_filename)
-        
-        # 下载视频文件
-        response = requests.get(url, stream=True)
-        response.raise_for_status()  # 如果请求失败则抛出异常
-        
-        # 写入临时文件
-        with open(temp_filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        return temp_filepath
-    except Exception as e:
-        raise Exception(f"下载视频失败: {str(e)}")
-
-def check_file_exists(file_path: str) -> bool:
-    """检查文件是否存在
-    
-    Args:
-        file_path: 文件路径
-        
-    Returns:
-        文件是否存在
-    """
-    # 如果是URL，返回假
-    if is_url(file_path):
-        return False
-    return os.path.isfile(file_path)
-
-
-def run_ffmpeg_command(cmd: List[str]) -> Dict[str, Any]:
-    """运行FFmpeg命令并返回结果
-    
-    Args:
-        cmd: FFmpeg命令列表
-        
-    Returns:
-        包含执行结果的字典
-    """
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"FFmpeg命令执行错误: {result.stderr}",
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"执行FFmpeg命令时出现异常: {str(e)}"
-        }
-
-
-def get_video_duration(video_path: str) -> Optional[float]:
-    """获取视频时长（秒）
-    
-    Args:
-        video_path: 视频文件路径
-        
-    Returns:
-        视频时长（秒），如果出错则返回None
-    """
-    if not check_file_exists(video_path):
-        return None
-        
-    cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", video_path
-    ]
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    if result.returncode == 0:
-        try:
-            info = json.loads(result.stdout)
-            return float(info.get("format", {}).get("duration", 0))
-        except (json.JSONDecodeError, ValueError):
-            return None
-    
-    return None
-
-
-def format_time(seconds: float) -> str:
-    """将秒数格式化为 HH:MM:SS.mmm 格式
-    
-    Args:
-        seconds: 秒数
-        
-    Returns:
-        格式化后的时间字符串
-    """
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds_val = seconds % 60
-    
-    return f"{hours:02d}:{minutes:02d}:{seconds_val:06.3f}"
 
 
 # 创建MCP服务器实例
 mcp = FastMCP("ffmpeg_mcp")
+
+# API Key 中间件 - 用于 SSE 传输模式
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# 使用 BaseHTTPMiddleware 类实现 API Key 验证
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, api_key=None):
+        super().__init__(app)
+        # 如果提供了 API Key，则使用提供的，否则使用默认的
+        self.api_key = api_key
+    
+    async def dispatch(self, request: Request, call_next):
+        # 从请求头中获取 API Key
+        request_api_key = request.headers.get("X-API-Key")
+        
+        # 使用实例变量中的 API Key
+        valid_key = self.api_key
+        
+        
+        # 验证 API Key
+        if not request_api_key or request_api_key != valid_key:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "无效的 API Key", "status": "unauthorized"}
+            )
+            
+        # API Key 有效，继续处理请求
+        return await call_next(request)
+
+def require_api_key(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        api_key = kwargs.pop("api_key", None)
+        # 如果没有提供 API Key，则假设中间件已经验证过了
+        if api_key is None:
+            return func(*args, **kwargs)
+        # 如果提供了 API Key，则验证是否与全局 API_KEY 相等
+        if api_key != API_KEY:
+            return {"error": "无效的 API Key", "status": "unauthorized"}
+        return func(*args, **kwargs)
+    return wrapper
 
 # FFmpeg 相关工具
 @mcp.tool
@@ -194,191 +96,6 @@ def ffmpeg_version() -> dict:
         return {"error": f"FFmpeg 调用错误: {str(e)}"}
     except FileNotFoundError:
         return {"error": "FFmpeg 未安装或未在 PATH 中"}
-
-@mcp.tool
-def ffmpeg_convert_video(input_path: str, output_path: str, format: str = None) -> dict:
-    """转换视频格式
-    
-    Args:
-        input_path: 输入视频文件路径
-        output_path: 输出视频文件路径
-        format: 输出格式，如 mp4, avi, mkv 等，如果为 None 则从 output_path 推断
-    
-    Returns:
-        包含转换结果的字典
-    """
-    try:
-        if not check_file_exists(input_path):
-            return {"error": f"输入文件不存在: {input_path}"}
-        
-        # 确保输出目录存在
-        ensure_directory_exists(output_path)
-        
-        # 构建 FFmpeg 命令
-        cmd = ["ffmpeg", "-i", input_path, "-y"]
-        
-        # 如果指定了格式，添加相应参数
-        if format:
-            cmd.extend(["-f", format])
-        
-        cmd.append(output_path)
-        
-        # 执行转换
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "message": f"文件转换成功: {output_path}",
-                "output_path": output_path
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"FFmpeg 转换错误: {result.stderr}"
-            }
-    except Exception as e:
-        return {"error": f"转换过程中出现异常: {str(e)}"}
-
-@mcp.tool
-def ffmpeg_extract_audio(video_path: str, audio_path: str, audio_format: str = "mp3") -> dict:
-    """从视频中提取音频
-    
-    Args:
-        video_path: 视频文件路径或URL
-        audio_path: 输出音频文件路径
-        audio_format: 音频格式，默认为 mp3
-    
-    Returns:
-        包含提取结果的字典
-    """
-    try:
-        local_video_path = video_path
-        
-        # 判断是否为网络地址，如果是则下载到本地
-        if is_url(video_path):
-            try:
-                local_video_path = download_video(video_path)
-                print(f"已下载网络视频到临时文件: {local_video_path}")
-            except Exception as e:
-                return {"error": f"下载视频失败: {str(e)}"}
-        elif not check_file_exists(video_path):
-            return {"error": f"视频文件不存在: {video_path}"}
-        
-        # 确保输出目录存在
-        ensure_directory_exists(audio_path)
-        
-        # 构建 FFmpeg 命令
-        cmd = [
-            "ffmpeg", "-i", local_video_path, "-vn", "-acodec", "copy" if audio_format == "aac" else "libmp3lame",
-            "-y", audio_path
-        ]
-        
-        # 执行命令
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "message": f"音频提取成功: {audio_path}",
-                "output_path": audio_path,
-                "source": "网络视频" if is_url(video_path) else "本地视频"
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"FFmpeg 提取音频错误: {result.stderr}"
-            }
-    except Exception as e:
-        return {"error": f"提取过程中出现异常: {str(e)}"}
-
-@mcp.tool
-def ffmpeg_create_thumbnail(video_path: str, thumbnail_path: str, time_position: str = "00:00:05") -> dict:
-    """从视频中提取特定时间点的缩略图
-    
-    Args:
-        video_path: 视频文件路径
-        thumbnail_path: 输出缩略图路径
-        time_position: 时间点，格式为 HH:MM:SS，默认为 5 秒
-    
-    Returns:
-        包含提取结果的字典
-    """
-    try:
-        if not check_file_exists(video_path):
-            return {"error": f"视频文件不存在: {video_path}"}
-        
-        # 确保输出目录存在
-        ensure_directory_exists(thumbnail_path)
-        
-        # 构建 FFmpeg 命令
-        cmd = [
-            "ffmpeg", "-i", video_path, "-ss", time_position, "-vframes", "1",
-            "-y", thumbnail_path
-        ]
-        
-        # 执行命令
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "message": f"缩略图提取成功: {thumbnail_path}",
-                "output_path": thumbnail_path
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"FFmpeg 提取缩略图错误: {result.stderr}"
-            }
-    except Exception as e:
-        return {"error": f"提取过程中出现异常: {str(e)}"}
-
-@mcp.tool
-def ffmpeg_remove_watermark(video_path: str, output_path: str, x: int = 590, y: int=1200, width: int=100, height: int=40) -> dict:
-    """去除视频中的水印
-    
-    Args:
-        video_path: 输入视频文件路径
-        output_path: 输出视频文件路径
-        x: 水印左上角的x坐标
-        y: 水印左上角的y坐标
-        width: 水印宽度
-        height: 水印高度
-    
-    Returns:
-        包含处理结果的字典
-    """
-    try:
-        if not check_file_exists(video_path):
-            return {"error": f"视频文件不存在: {video_path}"}
-        
-        # 确保输出目录存在
-        ensure_directory_exists(output_path)
-        
-        # 构建 FFmpeg 命令，使用 delogo 滤镜去除水印
-        cmd = [
-            "ffmpeg", "-i", video_path,
-            "-vf", f"delogo=x={x}:y={y}:w={width}:h={height}:show=0",
-            "-c:a", "copy", "-y", output_path
-        ]
-        
-        # 执行命令
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "message": f"水印去除成功: {output_path}",
-                "output_path": output_path
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"FFmpeg 去除水印错误: {result.stderr}"
-            }
-    except Exception as e:
-        return {"error": f"处理过程中出现异常: {str(e)}"}
 
 @mcp.tool
 def ffmpeg_get_video_info(video_path: str) -> dict:
@@ -455,71 +172,180 @@ def ffmpeg_get_video_info(video_path: str) -> dict:
         return {"error": f"处理过程中出现异常: {str(e)}"}
 
 @mcp.tool
-def ffmpeg_concat_videos(video_paths: list, output_path: str, transition_duration: float = 0.5) -> dict:
-    """合成多个视频文件为一个视频
+def ffmpeg_extract_audio(video_path: str, audio_format: str = "mp3") -> dict:
+    """从视频中提取音频并保存到默认资源目录
     
     Args:
-        video_paths: 视频文件路径列表
-        output_path: 输出视频文件路径
-        transition_duration: 过渡时间（秒），默认为0.5秒
+        video_path: 视频文件路径或 URL
+        audio_format: 音频格式，默认为 mp3
     
     Returns:
-        包含合成结果的字典
+        包含提取结果的字典
     """
     try:
-        # 检查所有输入文件是否存在
-        missing_files = []
-        for video_path in video_paths:
-            if not check_file_exists(video_path):
-                missing_files.append(video_path)
-        
-        if missing_files:
-            return {"error": f"以下视频文件不存在: {', '.join(missing_files)}"}
-        
-        if len(video_paths) < 2:
-            return {"error": "至少需要两个视频文件才能进行合成"}
-        
+        local_video_path = video_path
+
+        # 若为网络地址则先下载到本地
+        if is_url(video_path):
+            try:
+                local_video_path = download_video(video_path)
+                print(f"已下载网络视频到临时文件: {local_video_path}")
+            except Exception as e:
+                return {"error": f"下载视频失败: {str(e)}"}
+        elif not check_file_exists(video_path):
+            return {"error": f"视频文件不存在: {video_path}"}
+
+        # 生成输出路径：资源目录 + 唯一文件名
+        resources_dir = get_resources_directory()
+        original_name = os.path.basename(local_video_path)
+        name_root, _ = os.path.splitext(original_name)
+        output_filename = f"{name_root}_audio_{uuid.uuid4().hex[:8]}.{audio_format}"
+        output_path = os.path.join(resources_dir, output_filename)
+
         # 确保输出目录存在
         ensure_directory_exists(output_path)
-        
-        # 创建临时文件列表文件
-        temp_list_file = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt')
-        
-        # 写入文件列表
-        for video_path in video_paths:
-            temp_list_file.write(f"file '{os.path.abspath(video_path)}'\n")
-        
-        temp_list_file.close()
+
+        # 选择编码器
+        acodec = "copy" if audio_format == "aac" else "libmp3lame"
+
+        # 构建 FFmpeg 命令
+        cmd = [
+            "ffmpeg", "-i", local_video_path, "-vn", "-acodec", acodec,
+            "-y", output_path
+        ]
+
+        # 执行命令
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            return {
+                "success": True,
+                "message": f"音频提取成功: {output_path}",
+                "output_path": output_path,
+                "source": "网络视频" if is_url(video_path) else "本地视频"
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"FFmpeg 提取音频错误: {result.stderr}"
+            }
+    except Exception as e:
+        return {"error": f"提取过程中出现异常: {str(e)}"}
+
+@mcp.tool
+def ffmpeg_create_thumbnail(video_path: str, time_position: str = "00:00:05") -> dict:
+    """从视频中提取特定时间点的缩略图并保存到默认资源目录
+    
+    Args:
+        video_path: 视频文件路径或 URL
+        time_position: 时间点，格式为 HH:MM:SS，默认为 5 秒
+    
+    Returns:
+        包含提取结果的字典
+    """
+    try:
+        if not check_file_exists(video_path):
+            return {"error": f"视频文件不存在: {video_path}"}
+
+        # 生成输出路径：资源目录 + 唯一文件名
+        resources_dir = get_resources_directory()
+        original_name = os.path.basename(video_path)
+        name_root, ext = os.path.splitext(original_name)
+        output_filename = f"{name_root}_thumbnail_{uuid.uuid4().hex[:8]}.jpg"
+        thumbnail_path = os.path.join(resources_dir, output_filename)
+
+        # 确保输出目录存在
+        ensure_directory_exists(thumbnail_path)
         
         # 构建 FFmpeg 命令
         cmd = [
-            "ffmpeg", "-f", "concat", "-safe", "0", "-i", temp_list_file.name,
-            "-c:v", "libx264", "-preset", "medium", "-c:a", "aac", "-y", output_path
+            "ffmpeg", "-i", video_path, "-ss", time_position, "-vframes", "1",
+            "-y", thumbnail_path
         ]
         
         # 执行命令
         result = subprocess.run(cmd, capture_output=True, text=True)
         
-        # 删除临时文件
-        try:
-            os.unlink(temp_list_file.name)
-        except:
-            pass
-        
         if result.returncode == 0:
             return {
                 "success": True,
-                "message": f"视频合成成功: {output_path}",
-                "output_path": output_path
+                "message": f"缩略图提取成功: {thumbnail_path}",
+                "output_path": thumbnail_path
             }
         else:
             return {
                 "success": False,
-                "error": f"FFmpeg 合成视频错误: {result.stderr}"
+                "error": f"FFmpeg 提取缩略图错误: {result.stderr}"
+            }
+    except Exception as e:
+        return {"error": f"提取过程中出现异常: {str(e)}"}
+
+# 去水印工具：始终将结果保存到资源目录，不再暴露 output_path 参数
+@mcp.tool
+def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width: int = 100, height: int = 40) -> dict:
+    """去除视频中的水印
+    
+    Args:
+        video_path: 输入视频文件路径
+        x: 水印左上角的x坐标
+        y: 水印左上角的y坐标
+        width: 水印宽度
+        height: 水印高度
+    
+    Returns:
+        包含处理结果的字典
+    """
+    try:
+        # 处理网络视频
+        local_video_path = video_path
+        # 若为网络地址则先下载
+        if is_url(video_path):
+            try:
+                local_video_path = download_video(video_path)
+            except Exception as e:
+                return {"error": f"下载视频失败: {str(e)}"}
+        elif not check_file_exists(video_path):
+            return {"error": f"视频文件不存在: {video_path}"}
+        
+        # 生成输出路径：资源目录 + 唯一文件名
+        resources_dir = get_resources_directory()
+        original_name = os.path.basename(local_video_path)
+        name_root, ext = os.path.splitext(original_name)
+        output_filename = f"nowatermark_{name_root}_{uuid.uuid4().hex[:8]}{ext}"
+        output_path = os.path.join(resources_dir, output_filename)
+        
+        # 确保输出目录存在
+        ensure_directory_exists(output_path)
+        
+        # 构建 FFmpeg 命令，使用 delogo 滤镜去除水印
+        cmd = [
+            "ffmpeg", "-i", local_video_path,
+            "-vf", f"delogo=x={x}:y={y}:w={width}:h={height}:show=0",
+            "-c:a", "copy", "-y", output_path
+        ]
+        
+        # 执行命令
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            return {
+                "success": True,
+                "message": f"水印去除成功: {output_path}",
+                "output_path": output_path,
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"FFmpeg 去除水印错误: {result.stderr}"
             }
     except Exception as e:
         return {"error": f"处理过程中出现异常: {str(e)}"}
 
+# 资源目录映射：使用 FastMCP 的资源机制自动处理文件列举与下载
+# @mcp.resource
+# def resources_dir() -> str:
+#     """返回资源目录路径，供 FastMCP 自动暴露文件资源。"""
+#     return get_resources_directory()
 
 app = typer.Typer(help="FFmpeg MCP 服务命令行接口. 通过 MCP 服务器提供 FFmpeg 工具.")
 
@@ -534,15 +360,32 @@ def serve_local():
 @app.command(name="host", help="以网络主机模式启动 FFmpeg MCP 服务.")
 def serve_host(
     host_address: Annotated[str, typer.Option(help="服务器监听的主机地址.")] = "0.0.0.0",
-    port: Annotated[int, typer.Option(help="服务器运行的端口号.")] = 9000
+    port: Annotated[int, typer.Option(help="服务器运行的端口号.")] = 9000,
+    api_key: Annotated[str, typer.Option(help="设置自定义API Key")] = ""
 ):
     """
     启动 FFmpeg MCP 服务器，监听网络接口。
     """
+    transport = "sse"
+
+    # 如果提供了自定义API密钥，则设置全局API密钥
+    if api_key :
+        # 设置全局API密钥
+        api_key.strip()
+
     typer.echo(f"启动FFmpeg MCP服务 (模式: host, 地址: {host_address}, 端口: {port}, 传输: {transport})...")
     typer.echo(f"服务将在 http://{host_address}:{port}/{transport} 上运行")
-    mcp.run(transport="sse", host=host_address, port=port)
 
+    
+    # 添加 API Key 中间件，使用 Starlette 的 Middleware 类正确包装 APIKeyMiddleware
+    from starlette.middleware import Middleware
+    if api_key is None or api_key == "":
+        mcp.run(transport=transport, host=host_address, port=port)
+    else:
+        typer.echo("API Key 认证已启用，请在请求头中添加 X-API-Key")
+        mcp.run(transport=transport, host=host_address, port=port, middleware=[Middleware(APIKeyMiddleware, api_key=api_key)])
+
+  
 
 if __name__ == "__main__":
     app()
