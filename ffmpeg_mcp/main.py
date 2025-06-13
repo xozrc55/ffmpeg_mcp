@@ -342,10 +342,82 @@ def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width:
         return {"error": f"处理过程中出现异常: {str(e)}"}
 
 # 资源目录映射：使用 FastMCP 的资源机制自动处理文件列举与下载
-# @mcp.resource
-# def resources_dir() -> str:
-#     """返回资源目录路径，供 FastMCP 自动暴露文件资源。"""
-#     return get_resources_directory()
+@mcp.resource('resource://{param}')
+def resources_dir(param: str) -> dict:
+    """根据参数路径读取视频并返回Base64编码的blob数据及其MIME类型
+    
+    Args:
+        param: 指定要获取的视频文件名，如果为空则返回目录路径
+        
+    Returns:
+        如果指定了有效的视频文件名，返回包含视频的Base64编码数据和MIME类型的字典；
+        否则返回目录路径或错误信息
+    """
+    # 获取资源目录路径
+    resources_path = get_resources_directory()
+    
+    # 如果param为空，返回目录路径
+    if not param:
+        return {
+            "type": "directory",
+            "path": resources_path
+        }
+    
+    # 构造完整的文件路径
+    file_path = os.path.join(resources_path, param)
+    
+    # 检查文件是否存在
+    if not os.path.isfile(file_path):
+        # 如果文件不存在，返回错误信息
+        return {
+            "type": "error",
+            "message": f"文件不存在: {param}"
+        }
+    
+    # 检查是否为视频文件并确定MIME类型
+    _, ext = os.path.splitext(file_path)
+    ext = ext.lower()
+    
+    # 根据文件扩展名确定MIME类型
+    mime_types = {
+        '.mp4': "video/mp4",
+        '.avi': "video/x-msvideo",
+        '.mov': "video/quicktime",
+        '.mkv': "video/x-matroska",
+        '.webm': "video/webm",
+        '.flv': "video/x-flv"
+    }
+    
+    # 如果不是支持的视频格式，返回错误
+    if ext not in mime_types:
+        return {
+            "type": "error",
+            "message": f"不支持的文件类型: {ext}"
+        }
+    
+    # 获取对应的MIME类型
+    mime_type = mime_types[ext]
+    
+    # 读取文件内容并进行Base64编码
+    try:
+        with open(file_path, 'rb') as f:
+            # 读取文件内容
+            file_content = f.read()
+            # Base64编码
+            encoded_content = base64.b64encode(file_content).decode('utf-8')
+            
+            # 返回包含Base64编码数据和MIME类型的字典
+            return {
+                "type": "blob",
+                "mime_type": mime_type,
+                "content": encoded_content,
+                "filename": param
+            }
+    except Exception as e:
+        return {
+            "type": "error",
+            "message": f"读取文件失败: {str(e)}"
+        }
 
 app = typer.Typer(help="FFmpeg MCP 服务命令行接口. 通过 MCP 服务器提供 FFmpeg 工具.")
 
@@ -375,7 +447,7 @@ def serve_host(
 
     typer.echo(f"启动FFmpeg MCP服务 (模式: host, 地址: {host_address}, 端口: {port}, 传输: {transport})...")
     typer.echo(f"服务将在 http://{host_address}:{port}/{transport} 上运行")
-
+    
     
     # 添加 API Key 中间件，使用 Starlette 的 Middleware 类正确包装 APIKeyMiddleware
     from starlette.middleware import Middleware
