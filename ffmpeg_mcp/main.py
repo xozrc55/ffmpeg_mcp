@@ -6,15 +6,11 @@ FFmpeg MCP 服务 - 主入口文件
 这个文件是FFmpeg MCP服务的主入口点，负责启动MCP服务器并提供FFmpeg相关工具函数。
 """
 
-from click import utils
 from fastmcp import FastMCP
 import subprocess
 import os
 import json
-import tempfile
-import re
 import uuid
-import requests
 import functools
 import base64
 from typing import Dict, Any, List, Optional, Annotated, Tuple, Callable
@@ -282,7 +278,7 @@ def ffmpeg_create_thumbnail(video_path: str, time_position: str = "00:00:05") ->
 
 # 去水印工具：始终将结果保存到资源目录，不再暴露 output_path 参数
 @mcp.tool
-def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width: int = 100, height: int = 40) -> dict:
+def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width: int = 100, height: int = 40, output_dir: Optional[str] = None) -> dict:
     """去除视频中的水印
     
     Args:
@@ -291,6 +287,7 @@ def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width:
         y: 水印左上角的y坐标
         width: 水印宽度
         height: 水印高度
+        output_dir: 输出目录路径，如果不指定则使用资源目录
     
     Returns:
         包含处理结果的字典
@@ -307,15 +304,25 @@ def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width:
         elif not check_file_exists(video_path):
             return {"error": f"视频文件不存在: {video_path}"}
         
-        # 生成输出路径：资源目录 + 唯一文件名
-        resources_dir = get_resources_directory()
+        # 准备输出文件名
         original_name = os.path.basename(local_video_path)
         name_root, ext = os.path.splitext(original_name)
         output_filename = f"nowatermark_{name_root}_{uuid.uuid4().hex[:8]}{ext}"
-        output_path = os.path.join(resources_dir, output_filename)
+        
+        # 决定输出目录
+        if output_dir is None:
+            # 如果未指定输出目录，使用默认的资源目录
+            output_dir = get_resources_directory()
+        else:
+            # 如果路径不是绝对路径，则转换为绝对路径
+            if not os.path.isabs(output_dir):
+                output_dir = os.path.abspath(output_dir)
+        
+        # 生成完整输出路径
+        output_path = os.path.join(output_dir, output_filename)
         
         # 确保输出目录存在
-        ensure_directory_exists(output_path)
+        ensure_directory_exists(output_dir)
         
         # 构建 FFmpeg 命令，使用 delogo 滤镜去除水印
         cmd = [
@@ -340,6 +347,8 @@ def ffmpeg_remove_watermark(video_path: str, x: int = 590, y: int = 1200, width:
             }
     except Exception as e:
         return {"error": f"处理过程中出现异常: {str(e)}"}
+
+
 
 # 资源目录映射：使用 FastMCP 的资源机制自动处理文件列举与下载
 @mcp.resource('resource://{param}')
