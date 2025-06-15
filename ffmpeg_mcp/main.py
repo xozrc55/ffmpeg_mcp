@@ -18,7 +18,7 @@ import typer
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .utils.utils import (
+from ffmpeg_mcp.utils.utils import (
     get_temp_directory,
     get_resources_directory,
     copy_to_resources,
